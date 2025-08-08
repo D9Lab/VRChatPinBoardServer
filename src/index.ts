@@ -41,7 +41,7 @@ app.get('/addPinboard', async (c) => {
 })
 
 // 添加留言
-app.post('/addNote', async (c) => {
+app.get('/addNote', async (c) => {
   const body = await c.req.json<{
     pinboardId: string
     localPosition: string
