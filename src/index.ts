@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { HTTPException } from 'hono/http-exception'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq, and, max } from 'drizzle-orm'
+import { eq, and, max, sql } from 'drizzle-orm'
 import * as schema from './schema'
 import md5 from 'js-md5'
 
@@ -19,6 +19,11 @@ app.use('/*', cors())
 // 数据库操作工具
 const useDB = (c: Hono.Context) => drizzle(c.env.DB, { schema })
 
+
+app.get('/', async (c) => {
+    return c.json({ message: 'Hello!' })
+})
+
 // 添加留言板
 app.get('/addPinboard', async (c) => {
   const pinboardId = c.req.query('pinboardId')
@@ -26,6 +31,14 @@ app.get('/addPinboard', async (c) => {
 
   if (!pinboardId || !hashKey) {
     throw new HTTPException(400, { message: '缺少必要参数' })
+  }
+
+  if (pinboardId.length !== 14) {
+    throw new HTTPException(400, { message: '留言板ID必须为14位' })
+  }
+
+  if (hashKey.length !== 32) {
+    throw new HTTPException(400, { message: 'Hash密钥必须为32位' })
   }
 
   const db = useDB(c)
@@ -77,7 +90,7 @@ app.get('/addNote', async (c) => {
     .get()
 
   if (!pinboard) {
-    throw new HTTPException(404, { message: '留言板不存在' })
+    throw new HTTPException(418, { message: '留言板不存在' })
   }
 
   // 验证数据完整性
@@ -89,20 +102,48 @@ app.get('/addNote', async (c) => {
     throw new HTTPException(401, { message: '数据校验失败' })
   }
 
-  try {
+try {
+  await db.transaction(async (tx) => {
+    // 获取当前留言数量
+    const countResult = await tx
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(schema.notes)
+      .where(eq(schema.notes.pinboardId, pinboardId))
+      .get()
+
+    const noteCount = countResult?.count ?? 0
+
+    // 如果留言数量达到64条，删除最旧的一条
+    if (noteCount >= 64) {
+      // 找到最旧的一条留言（timestamp最小）
+      const oldestNote = await tx.select({ id: schema.notes.id })
+        .from(schema.notes)
+        .where(eq(schema.notes.pinboardId, pinboardId))
+        .orderBy(schema.notes.timestamp)
+        .limit(1)
+        .get()
+
+      if (oldestNote) {
+        await tx.delete(schema.notes)
+          .where(eq(schema.notes.id, oldestNote.id))
+          .run()
+      }
+    }
+
     // 获取当前最大索引
-    const maxIndexResult = await db
+    const maxIndexResult = await tx
       .select({ maxIndex: max(schema.notes.noteindex) })
       .from(schema.notes)
       .where(eq(schema.notes.pinboardId, pinboardId))
       .get()
-      
+
     // 计算下一个索引值
     const nextIndex = maxIndexResult?.maxIndex !== null ? 
                      (maxIndexResult?.maxIndex ?? -1) + 1 : 
                      0
+
     // 添加留言
-    await db.insert(schema.notes).values({
+    await tx.insert(schema.notes).values({
       pinboardId,
       noteindex: nextIndex,
       localPosition,
@@ -112,12 +153,13 @@ app.get('/addNote', async (c) => {
       userHash,
       timestamp: Date.now()
     })
-    
-    return c.json({ success: true, index: nextIndex })
-  } catch (error) {
-    console.error('添加留言失败:', error)
-    throw new HTTPException(500, { message: '添加留言失败' })
-  }
+  })
+  
+  return c.json({ success: 'true' })
+} catch (error) {
+  console.error('添加留言失败:', error)
+  throw new HTTPException(500, { message: '添加留言失败' })
+}
 })
 
 // 获取留言
@@ -126,6 +168,10 @@ app.get('/getNotes', async (c) => {
   
   if (!pinboardId) {
     throw new HTTPException(400, { message: '缺少留言板ID' })
+  }
+
+  if (pinboardId.length !== 14) {
+    throw new HTTPException(400, { message: '留言板ID必须为14位' })
   }
 
   const db = useDB(c)
@@ -175,7 +221,7 @@ app.get('/deleteNote', async (c) => {
     .get()
 
   if (!pinboard || pinboard.hashKey !== hashKey) {
-    throw new HTTPException(401, { message: '认证失败' })
+    throw new HTTPException(403, { message: '认证失败' })
   }
 
   // 删除留言
