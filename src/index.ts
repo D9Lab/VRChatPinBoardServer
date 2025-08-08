@@ -79,10 +79,10 @@ app.post('/addNote', async (c) => {
 
   // 获取当前最大索引
   const maxIndexResult = await db
-    .select({ maxIndex: schema.notes.index })
+    .select({ maxIndex: schema.notes.noteindex })
     .from(schema.notes)
     .where(schema.notes.pinboardId.eq(pinboardId))
-    .orderBy(schema.notes.index.desc())
+    .orderBy(schema.notes.noteindex.desc())
     .limit(1)
 
   const nextIndex = maxIndexResult[0]?.maxIndex !== undefined ? maxIndexResult[0].maxIndex + 1 : 0
@@ -114,7 +114,7 @@ app.get('/getNotes', async (c) => {
   
   const notes = await db.query.notes.findMany({
     where: (notes, { eq }) => eq(notes.pinboardId, pinboardId),
-    orderBy: (notes, { asc }) => [asc(notes.index)]
+    orderBy: (notes, { asc }) => [asc(notes.noteindex)]
   })
 
   // 转换为要求的格式
@@ -127,7 +127,7 @@ app.get('/getNotes', async (c) => {
       content: note.content,
       timestamp: note.timestamp,
       userHash: note.userHash,
-      index: note.index
+      index: note.noteindex
     }
   })
 
@@ -158,7 +158,7 @@ app.get('/deleteNote', async (c) => {
   // 删除留言
   await db.delete(schema.notes).where(
     schema.notes.pinboardId.eq(pinboardId) &&
-    schema.notes.index.eq(parseInt(index))
+    schema.notes.noteindex.eq(parseInt(index))
   )
 
   return c.json({ success: true })

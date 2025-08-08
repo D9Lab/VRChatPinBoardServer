@@ -13,7 +13,7 @@ export const pinboards = sqliteTable('pinboards', {
 export const notes = sqliteTable('notes', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   pinboardId: text('pinboardId').notNull(),
-  index: integer('index').notNull(),
+  noteindex: integer('noteindex').notNull(),
   localPosition: text('localPosition').notNull(),
   angle: text('angle').notNull(),
   colorHue: text('colorHue').notNull(),
