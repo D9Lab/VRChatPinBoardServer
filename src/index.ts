@@ -27,14 +27,6 @@ app.get('/addPinboard', async (c) => {
     throw new HTTPException(400, { message: '缺少必要参数' })
   }
 
-  if (pinboardId.length !== 14) {
-    throw new HTTPException(400, { message: '留言板ID必须为14位' })
-  }
-
-  if (hashKey.length !== 32) {
-    throw new HTTPException(400, { message: 'Hash密钥必须为32位' })
-  }
-
   const db = useDB(c)
   
   try {
