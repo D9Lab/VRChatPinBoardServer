@@ -50,24 +50,31 @@ app.get('/addNote', async (c) => {
     localPosition,
     angle,
     colorHue,
-    content: encodedContent, // 接收编码后的内容
+    content: encodedContent,
     userHash,
     hash
   } = params;
 
+  // 验证所有必需参数
   if (!pinboardId || !localPosition || !angle || !colorHue || !encodedContent || !userHash || !hash) {
     throw new HTTPException(400, { message: '缺少必要参数' })
   }
 
-  // 解码内容（客户端使用 encodeURIComponent 编码）
-  const content = decodeURIComponent(encodedContent);
+  // 解码内容
+  let content = '';
+  try {
+    content = decodeURIComponent(encodedContent);
+  } catch (e) {
+    console.error('内容解码失败:', e)
+    throw new HTTPException(400, { message: '内容格式无效' })
+  }
 
   const db = useDB(c)
   
   // 获取留言板密钥
-  const pinboard = await db.query.pinboards.findFirst({
-    where: (pinboards, { eq }) => eq(pinboards.pinboardId, pinboardId)
-  })
+  const pinboard = await db.select().from(schema.pinboards)
+    .where(eq(schema.pinboards.pinboardId, pinboardId))
+    .get()
 
   if (!pinboard) {
     throw new HTTPException(404, { message: '留言板不存在' })
@@ -78,32 +85,41 @@ app.get('/addNote', async (c) => {
   const calculatedHash = md5(data)
 
   if (calculatedHash !== hash) {
+    console.warn('数据校验失败:', { calculatedHash, receivedHash: hash })
     throw new HTTPException(401, { message: '数据校验失败' })
   }
 
-  // 获取当前最大索引
-  const maxIndexResult = await db.select({ 
-    maxIndex: schema.notes.noteindex 
-  }).from(schema.notes)
-    .where(eq(schema.notes.pinboardId, pinboardId))
-    .orderBy(schema.notes.noteindex)
-    .get()
+  // 修复索引计算逻辑
+  try {
+    // 获取当前最大索引
+    const maxIndexResult = await db
+      .select({ maxIndex: sql<number>`MAX(${schema.notes.noteindex})` })
+      .from(schema.notes)
+      .where(eq(schema.notes.pinboardId, pinboardId))
+      .get()
 
-  const nextIndex = maxIndexResult?.maxIndex !== undefined ? maxIndexResult.maxIndex + 1 : 0
+    // 计算下一个索引值
+    const nextIndex = maxIndexResult?.maxIndex !== null ? 
+                     (maxIndexResult?.maxIndex ?? -1) + 1 : 
+                     0
 
-  // 添加留言
-  await db.insert(schema.notes).values({
-    pinboardId,
-    noteindex: nextIndex,
-    localPosition,
-    angle,
-    colorHue,
-    content,
-    userHash,
-    timestamp: Date.now()
-  })
-
-  return c.json({ success: true, index: nextIndex })
+    // 添加留言
+    await db.insert(schema.notes).values({
+      pinboardId,
+      noteindex: nextIndex,
+      localPosition,
+      angle,
+      colorHue,
+      content,
+      userHash,
+      timestamp: Date.now()
+    })
+    
+    return c.json({ success: true, index: nextIndex })
+  } catch (error) {
+    console.error('添加留言失败:', error)
+    throw new HTTPException(500, { message: '添加留言失败' })
+  }
 })
 
 // 获取留言
