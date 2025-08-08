@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { HTTPException } from 'hono/http-exception'
 import { drizzle } from 'drizzle-orm/d1'
+import { eq, and, desc, asc } from 'drizzle-orm'
 import * as schema from './schema'
 import md5 from 'js-md5'
 
@@ -81,14 +82,14 @@ app.get('/addNote', async (c) => {
   }
 
   // 获取当前最大索引
-  const maxIndexResult = await db
-    .select({ maxIndex: schema.notes.noteindex })
-    .from(schema.notes)
-    .where(schema.notes.pinboardId.eq(pinboardId))
-    .orderBy(schema.notes.noteindex.desc())
-    .limit(1)
+  const maxIndexResult = await db.select({ 
+    maxIndex: schema.notes.noteindex 
+  }).from(schema.notes)
+    .where(eq(schema.notes.pinboardId, pinboardId))
+    .orderBy(schema.notes.noteindex)
+    .get()
 
-  const nextIndex = maxIndexResult[0]?.maxIndex !== undefined ? maxIndexResult[0].maxIndex + 1 : 0
+  const nextIndex = maxIndexResult?.maxIndex !== undefined ? maxIndexResult.maxIndex + 1 : 0
 
   // 添加留言
   await db.insert(schema.notes).values({
@@ -147,24 +148,36 @@ app.get('/deleteNote', async (c) => {
     throw new HTTPException(400, { message: '缺少必要参数' })
   }
 
+  const dbIndex = parseInt(index);
+  if (isNaN(dbIndex)) {
+    throw new HTTPException(400, { message: '索引无效' })
+  }
+
   const db = useDB(c)
   
   // 验证留言板密钥
-  const pinboard = await db.query.pinboards.findFirst({
-    where: (pinboards, { eq }) => eq(pinboards.pinboardId, pinboardId)
-  })
+  const pinboard = await db.select().from(schema.pinboards)
+    .where(eq(schema.pinboards.pinboardId, pinboardId))
+    .get()
 
   if (!pinboard || pinboard.hashKey !== hashKey) {
     throw new HTTPException(401, { message: '认证失败' })
   }
 
   // 删除留言
-  await db.delete(schema.notes).where(
-    schema.notes.pinboardId.eq(pinboardId) &&
-    schema.notes.noteindex.eq(parseInt(index))
-  )
-
-  return c.json({ success: true })
+  try {
+    await db.delete(schema.notes)
+      .where(and(
+        eq(schema.notes.pinboardId, pinboardId),
+        eq(schema.notes.noteindex, dbIndex)
+      ))
+      .run()
+    
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('删除留言失败:', error)
+    throw new HTTPException(500, { message: '删除留言失败' })
+  }
 })
 
 export default app
