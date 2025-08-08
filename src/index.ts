@@ -42,21 +42,24 @@ app.get('/addPinboard', async (c) => {
 
 // 添加留言
 app.get('/addNote', async (c) => {
-  const body = await c.req.json<{
-    pinboardId: string
-    localPosition: string
-    angle: string
-    colorHue: string
-    content: string
-    userHash: string
-    hash: string
-  }>()
+  const params = c.req.query();
+  
+  const {
+    pinboardId,
+    localPosition,
+    angle,
+    colorHue,
+    content: encodedContent, // 接收编码后的内容
+    userHash,
+    hash
+  } = params;
 
-  const { pinboardId, localPosition, angle, colorHue, content, userHash, hash } = body
-
-  if (!pinboardId || !localPosition || !angle || !colorHue || !content || !userHash || !hash) {
+  if (!pinboardId || !localPosition || !angle || !colorHue || !encodedContent || !userHash || !hash) {
     throw new HTTPException(400, { message: '缺少必要参数' })
   }
+
+  // 解码内容（客户端使用 encodeURIComponent 编码）
+  const content = decodeURIComponent(encodedContent);
 
   const db = useDB(c)
   
@@ -90,7 +93,7 @@ app.get('/addNote', async (c) => {
   // 添加留言
   await db.insert(schema.notes).values({
     pinboardId,
-    index: nextIndex,
+    noteindex: nextIndex,
     localPosition,
     angle,
     colorHue,
