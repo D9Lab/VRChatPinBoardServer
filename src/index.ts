@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { HTTPException } from 'hono/http-exception'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq, and, desc, asc } from 'drizzle-orm'
+import { eq, and, max } from 'drizzle-orm'
 import * as schema from './schema'
 import md5 from 'js-md5'
 
@@ -89,20 +89,18 @@ app.get('/addNote', async (c) => {
     throw new HTTPException(401, { message: '数据校验失败' })
   }
 
-  // 修复索引计算逻辑
   try {
     // 获取当前最大索引
     const maxIndexResult = await db
-      .select({ maxIndex: sql<number>`MAX(${schema.notes.noteindex})` })
+      .select({ maxIndex: max(schema.notes.noteindex) })
       .from(schema.notes)
       .where(eq(schema.notes.pinboardId, pinboardId))
       .get()
-
+      
     // 计算下一个索引值
     const nextIndex = maxIndexResult?.maxIndex !== null ? 
                      (maxIndexResult?.maxIndex ?? -1) + 1 : 
                      0
-
     // 添加留言
     await db.insert(schema.notes).values({
       pinboardId,
