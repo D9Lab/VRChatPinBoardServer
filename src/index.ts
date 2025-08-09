@@ -25,7 +25,7 @@ const validatePinboardId = (id: string) => {
 }
 
 const validateHash = (hash: string) => {
-  return validator.isHexadecimal(hash) && validator.isLength(hash, { min: 32, max: 32 })
+  return validator.isAlphanumeric(hash) && validator.isLength(hash, { min: 32, max: 32 })
 }
 
 app.get('/', async (c) => {
