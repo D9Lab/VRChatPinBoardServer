@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { HTTPException } from 'hono/http-exception'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq, and, max } from 'drizzle-orm'
+import { eq, and, max, sql } from 'drizzle-orm'
 import * as schema from './schema'
 import md5 from 'js-md5'
 import validator from 'validator'
@@ -128,7 +128,7 @@ try {
 
     // 获取当前留言数量
     const countResult = await db
-      .select({ count: max(schema.notes.id) })
+      .select({ count: sql<number>`COUNT(*)` })
       .from(schema.notes)
       .where(eq(schema.notes.pinboardId, pinboardId))
       .get()
@@ -137,14 +137,14 @@ try {
 
     // 如果留言数量达到限制，删除最旧的一条
     if (noteCount >= maxNotes) {
-      const oldestNote = await db.select({ id: schema.notes.id })
+      const oldestNote = await db.select({ id: schema.notes.id, noteindex: schema.notes.noteindex })
           .from(schema.notes)
           .where(eq(schema.notes.pinboardId, pinboardId))
           .orderBy(schema.notes.timestamp)
           .limit(1)
           .get()
       if (oldestNote) {
-        nextIndex = oldestNote.id
+        nextIndex = oldestNote.noteindex
         await db.delete(schema.notes)
           .where(eq(schema.notes.id, oldestNote.id))
           .run()
@@ -162,11 +162,11 @@ try {
       if (nextIndex > maxNotes) {
         // 查找可用的最小noteindex
         // 获取当前所有已用的noteindex
-        const usedIndexes = await db.select({ index: schema.notes.noteindex })
+        const usedIndexes = await db.select({ noteindex: schema.notes.noteindex })
           .from(schema.notes)
           .where(eq(schema.notes.pinboardId, pinboardId))
           .all()
-          .then(notes => notes.map(note => note.index));
+          .then(notes => notes.map(note => note.noteindex));
     
         // 查找最小的可用noteindex
         for (let i = 0; i <= maxNotes; i++) {
