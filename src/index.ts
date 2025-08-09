@@ -10,6 +10,7 @@ import validator from 'validator'
 
 type Bindings = {
   DB: D1Database
+  MAX_NOTES_PER_PINBOARD: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -123,7 +124,8 @@ app.get('/addNote', async (c) => {
   }
 
 try {
-  const maxNotes = parseInt('64')
+  const maxNotes = parseInt(c.env.MAX_NOTES_PER_PINBOARD || '128') || 128
+  let nextIndex = 0;
 
     // 获取当前留言数量
     const countResult = await db
@@ -136,23 +138,46 @@ try {
 
     // 如果留言数量达到限制，删除最旧的一条
     if (noteCount >= maxNotes) {
-      await db.delete(schema.notes)
+      const oldestNote = await db.select({ id: schema.notes.id })
+          .from(schema.notes)
+          .where(eq(schema.notes.pinboardId, pinboardId))
+          .orderBy(schema.notes.timestamp)
+          .limit(1)
+          .get()
+      if (oldestNote) {
+        nextIndex = oldestNote.id
+        await db.delete(schema.notes)
+          .where(eq(schema.notes.id, oldestNote.id))
+          .run()
+      }
+    } else {
+      // 获取当前最大索引
+      const maxIndexResult = await db
+        .select({ maxIndex: max(schema.notes.noteindex) })
+        .from(schema.notes)
         .where(eq(schema.notes.pinboardId, pinboardId))
-        .orderBy(schema.notes.id)
-        .limit(1)
+        .get()
+      // 计算下一个索引值
+      nextIndex = maxIndexResult?.maxIndex !== null ? 
+                    (maxIndexResult?.maxIndex ?? -1) + 1 : 0
+      if (nextIndex > maxNotes) {
+        // 查找可用的最小noteindex
+        // 获取当前所有已用的noteindex
+        const usedIndexes = await db.select({ index: schema.notes.noteindex })
+          .from(schema.notes)
+          .where(eq(schema.notes.pinboardId, pinboardId))
+          .all()
+          .then(notes => notes.map(note => note.index));
+    
+        // 查找最小的可用noteindex
+        for (let i = 0; i <= maxNotes; i++) {
+          if (!usedIndexes.includes(i)) {
+            nextIndex = i;
+            break;
+          }
+        }
+      }
     }
-
-    // 获取当前最大索引
-    const maxIndexResult = await db
-      .select({ maxIndex: max(schema.notes.noteindex) })
-      .from(schema.notes)
-      .where(eq(schema.notes.pinboardId, pinboardId))
-      .get()
-
-    // 计算下一个索引值
-    const nextIndex = maxIndexResult?.maxIndex !== null ? 
-                     (maxIndexResult?.maxIndex ?? -1) + 1 : 
-                     0
 
     // 添加留言
     await db.insert(schema.notes).values({
@@ -165,7 +190,7 @@ try {
       userHash,
       timestamp: Date.now()
     })
-
+  
   return c.json({ success: true, index: nextIndex })
 } catch (error) {
   console.error('添加留言失败:', error)
@@ -194,7 +219,7 @@ app.get('/getNotes', async (c) => {
       .all()
 
     // 限制返回数量
-    const maxNotes = parseInt('64')
+    const maxNotes = parseInt(c.env.MAX_NOTES_PER_PINBOARD || '128') || 128
     const limitedNotes = notes.slice(0, maxNotes)
 
     // 转换为要求的格式
