@@ -10,7 +10,6 @@ import validator from 'validator'
 
 type Bindings = {
   DB: D1Database
-  MAX_NOTES_PER_PINBOARD: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -124,7 +123,7 @@ app.get('/addNote', async (c) => {
   }
 
 try {
-  const maxNotes = parseInt(c.env.MAX_NOTES_PER_PINBOARD || '128') || 128
+  const maxNotes = parseInt('128')
   let nextIndex = 0;
 
     // 获取当前留言数量
@@ -219,7 +218,7 @@ app.get('/getNotes', async (c) => {
       .all()
 
     // 限制返回数量
-    const maxNotes = parseInt(c.env.MAX_NOTES_PER_PINBOARD || '128') || 128
+    const maxNotes = parseInt('128')
     const limitedNotes = notes.slice(0, maxNotes)
 
     // 转换为要求的格式
