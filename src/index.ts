@@ -3,9 +3,10 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { HTTPException } from 'hono/http-exception'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq, and, max, sql } from 'drizzle-orm'
+import { eq, and, max } from 'drizzle-orm'
 import * as schema from './schema'
 import md5 from 'js-md5'
+import validator from 'validator'
 
 type Bindings = {
   DB: D1Database
@@ -19,6 +20,13 @@ app.use('/*', cors())
 // 数据库操作工具
 const useDB = (c: Hono.Context) => drizzle(c.env.DB, { schema })
 
+const validatePinboardId = (id: string) => {
+  return validator.isAlphanumeric(id) && validator.isLength(id, { min: 14, max: 14 })
+}
+
+const validateHash = (hash: string) => {
+  return validator.isHexadecimal(hash) && validator.isLength(hash, { min: 32, max: 32 })
+}
 
 app.get('/', async (c) => {
     return c.json({ message: 'Hello!' })
@@ -30,15 +38,15 @@ app.get('/addPinboard', async (c) => {
   const hashKey = c.req.query('hashKey')
 
   if (!pinboardId || !hashKey) {
-    throw new HTTPException(400, { message: '缺少必要参数' })
+    throw new HTTPException(400, { message: '参数错误' })
   }
 
-  if (pinboardId.length !== 14) {
-    throw new HTTPException(400, { message: '留言板ID必须为14位' })
+  if (!validatePinboardId(pinboardId)) {
+    throw new HTTPException(400, { message: '无效的留言板ID' })
   }
 
-  if (hashKey.length !== 32) {
-    throw new HTTPException(400, { message: 'Hash密钥必须为32位' })
+  if (!validateHash(hashKey)) {
+    throw new HTTPException(400, { message: '无效的HashKey' })
   }
 
   const db = useDB(c)
@@ -48,9 +56,9 @@ app.get('/addPinboard', async (c) => {
       pinboardId,
       hashKey
     })
-    return c.json({ success: true, message: '留言板创建成功' })
+    return c.json({ success: true })
   } catch (error) {
-    throw new HTTPException(500, { message: '留言板创建失败' })
+    throw new HTTPException(500, { message: '操作失败' })
   }
 })
 
@@ -71,6 +79,18 @@ app.get('/addNote', async (c) => {
   // 验证所有必需参数
   if (!pinboardId || !localPosition || !angle || !colorHue || !encodedContent || !userHash || !hash) {
     throw new HTTPException(400, { message: '缺少必要参数' })
+  }
+
+  if (!validatePinboardId(pinboardId)) {
+    throw new HTTPException(400, { message: '无效的留言板ID' })
+  }
+  
+  if (!validateHash(userHash)) {
+    throw new HTTPException(400, { message: '无效的用户Hash' })
+  }
+  
+  if (!validateHash(hash)) {
+    throw new HTTPException(400, { message: '无效的校验Hash' })
   }
 
   // 解码内容
@@ -103,35 +123,27 @@ app.get('/addNote', async (c) => {
   }
 
 try {
-  await db.transaction(async (tx) => {
+  const maxNotes = parseInt('64')
+
     // 获取当前留言数量
-    const countResult = await tx
-      .select({ count: sql<number>`COUNT(*)` })
+    const countResult = await db
+      .select({ count: max(schema.notes.id) })
       .from(schema.notes)
       .where(eq(schema.notes.pinboardId, pinboardId))
       .get()
 
     const noteCount = countResult?.count ?? 0
 
-    // 如果留言数量达到64条，删除最旧的一条
-    if (noteCount >= 64) {
-      // 找到最旧的一条留言（timestamp最小）
-      const oldestNote = await tx.select({ id: schema.notes.id })
-        .from(schema.notes)
+    // 如果留言数量达到限制，删除最旧的一条
+    if (noteCount >= maxNotes) {
+      await db.delete(schema.notes)
         .where(eq(schema.notes.pinboardId, pinboardId))
-        .orderBy(schema.notes.timestamp)
+        .orderBy(schema.notes.id)
         .limit(1)
-        .get()
-
-      if (oldestNote) {
-        await tx.delete(schema.notes)
-          .where(eq(schema.notes.id, oldestNote.id))
-          .run()
-      }
     }
 
     // 获取当前最大索引
-    const maxIndexResult = await tx
+    const maxIndexResult = await db
       .select({ maxIndex: max(schema.notes.noteindex) })
       .from(schema.notes)
       .where(eq(schema.notes.pinboardId, pinboardId))
@@ -143,7 +155,7 @@ try {
                      0
 
     // 添加留言
-    await tx.insert(schema.notes).values({
+    await db.insert(schema.notes).values({
       pinboardId,
       noteindex: nextIndex,
       localPosition,
@@ -153,12 +165,11 @@ try {
       userHash,
       timestamp: Date.now()
     })
-  })
-  
-  return c.json({ success: 'true' })
+
+  return c.json({ success: true, index: nextIndex })
 } catch (error) {
   console.error('添加留言失败:', error)
-  throw new HTTPException(500, { message: '添加留言失败' })
+  throw new HTTPException(500, { message: '操作失败' })
 }
 })
 
@@ -167,35 +178,44 @@ app.get('/getNotes', async (c) => {
   const pinboardId = c.req.query('pinboardId')
   
   if (!pinboardId) {
-    throw new HTTPException(400, { message: '缺少留言板ID' })
+    throw new HTTPException(400, { message: '缺少必要参数' })
   }
 
-  if (pinboardId.length !== 14) {
-    throw new HTTPException(400, { message: '留言板ID必须为14位' })
+  if (!validatePinboardId(pinboardId)) {
+    throw new HTTPException(400, { message: '无效的留言板ID' })
   }
 
   const db = useDB(c)
   
-  const notes = await db.query.notes.findMany({
-    where: (notes, { eq }) => eq(notes.pinboardId, pinboardId),
-    orderBy: (notes, { asc }) => [asc(notes.noteindex)]
-  })
+  try {
+    const notes = await db.select().from(schema.notes)
+      .where(eq(schema.notes.pinboardId, pinboardId))
+      .orderBy(schema.notes.noteindex)
+      .all()
 
-  // 转换为要求的格式
-  const result: Record<string, any> = {}
-  notes.forEach((note, i) => {
-    result[i] = {
-      localPosition: note.localPosition,
-      angle: note.angle,
-      colorHue: note.colorHue,
-      content: note.content,
-      timestamp: note.timestamp,
-      userHash: note.userHash,
-      index: note.noteindex
-    }
-  })
+    // 限制返回数量
+    const maxNotes = parseInt('64')
+    const limitedNotes = notes.slice(0, maxNotes)
 
-  return c.json(result)
+    // 转换为要求的格式
+    const result: Record<string, any> = {}
+    limitedNotes.forEach((note, i) => {
+      result[i] = {
+        localPosition: note.localPosition,
+        angle: note.angle,
+        colorHue: note.colorHue,
+        content: note.content,
+        timestamp: note.timestamp,
+        userHash: note.userHash,
+        index: note.noteindex
+      }
+    })
+
+    return c.json(result)
+  } catch (error) {
+    console.error('获取留言失败:', error)
+    throw new HTTPException(500, { message: '操作失败' })
+  }
 })
 
 // 删除留言
@@ -208,9 +228,17 @@ app.get('/deleteNote', async (c) => {
     throw new HTTPException(400, { message: '缺少必要参数' })
   }
 
+  if (!validatePinboardId(pinboardId)) {
+    throw new HTTPException(400, { message: '无效的留言板ID' })
+  }
+  
+  if (!validateHash(hashKey)) {
+    throw new HTTPException(400, { message: '无效的HashKey' })
+  }
+
   const dbIndex = parseInt(index);
-  if (isNaN(dbIndex)) {
-    throw new HTTPException(400, { message: '索引无效' })
+  if (!Number.isInteger(dbIndex) || dbIndex < 0) {
+    throw new HTTPException(400, { message: '无效的索引' })
   }
 
   const db = useDB(c)
@@ -236,7 +264,7 @@ app.get('/deleteNote', async (c) => {
     return c.json({ success: true })
   } catch (error) {
     console.error('删除留言失败:', error)
-    throw new HTTPException(500, { message: '删除留言失败' })
+    throw new HTTPException(500, { message: '操作失败' })
   }
 })
 
