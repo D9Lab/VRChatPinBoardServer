@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { HTTPException } from 'hono/http-exception'
 import { drizzle } from 'drizzle-orm/d1'
-import { eq, and, max, sql } from 'drizzle-orm'
+import { eq, and, max, sql, asc } from 'drizzle-orm'
 import * as schema from './schema'
 import md5 from 'js-md5'
 import validator from 'validator'
@@ -14,8 +14,13 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>()
 
+const maxNotes = parseInt('128')
+
 // 允许跨域
-app.use('/*', cors())
+app.use('/*', cors({
+            origin: '*',
+            allowHeaders: ['Content-Type', 'Authorization']
+        }))
 
 // 数据库操作工具
 const useDB = (c: Hono.Context) => drizzle(c.env.DB, { schema })
@@ -123,17 +128,19 @@ app.get('/addNote', async (c) => {
   }
 
 try {
-  const maxNotes = parseInt('128')
   let nextIndex = 0;
 
-    // 获取当前留言数量
-    const countResult = await db
-      .select({ count: sql<number>`COUNT(*)` })
+  const stats = await db
+      .select({
+        count: sql<number>`COUNT(*)`,
+        maxIndex: max(schema.notes.noteindex)
+      })
       .from(schema.notes)
       .where(eq(schema.notes.pinboardId, pinboardId))
-      .get()
+      .get();
 
-    const noteCount = countResult?.count ?? 0
+      const noteCount = stats?.count ?? 0
+      const maxIndex = stats?.maxIndex ?? -1
 
     // 如果留言数量达到限制，删除最旧的一条
     if (noteCount >= maxNotes) {
@@ -144,38 +151,42 @@ try {
           .limit(1)
           .get()
       if (oldestNote) {
+        // 直接使用被删除留言的noteindex
         nextIndex = oldestNote.noteindex
         await db.delete(schema.notes)
           .where(eq(schema.notes.id, oldestNote.id))
           .run()
+      } else {
+        // 理论上不应该发生
+        console.error('无法找到最旧的留言进行替换')
+        throw new HTTPException(500, { message: '操作失败' });
       }
     } else {
-      // 获取当前最大索引
-      const maxIndexResult = await db
-        .select({ maxIndex: max(schema.notes.noteindex) })
-        .from(schema.notes)
-        .where(eq(schema.notes.pinboardId, pinboardId))
-        .get()
-      // 计算下一个索引值
-      nextIndex = maxIndexResult?.maxIndex !== null ? 
-                    (maxIndexResult?.maxIndex ?? -1) + 1 : 0
-      if (nextIndex > maxNotes) {
-        // 查找可用的最小noteindex
-        // 获取当前所有已用的noteindex
-        const usedIndexes = await db.select({ noteindex: schema.notes.noteindex })
-          .from(schema.notes)
-          .where(eq(schema.notes.pinboardId, pinboardId))
-          .all()
-          .then(notes => notes.map(note => note.noteindex));
-    
-        // 查找最小的可用noteindex
-        for (let i = 0; i <= maxNotes; i++) {
-          if (!usedIndexes.includes(i)) {
-            nextIndex = i;
-            break;
+      // 留言未满，使用maxIndex + 1
+      const potentialNextIndex = maxIndex + 1;
+      if (noteCount === potentialNextIndex && potentialNextIndex < maxNotes) {
+            nextIndex = potentialNextIndex;
+          } else {
+            // nextIndex超限，查找可用的最小noteindex
+            // 获取当前所有已用的noteindex
+            const usedIndexes = await db.select({ noteindex: schema.notes.noteindex })
+              .from(schema.notes)
+              .where(eq(schema.notes.pinboardId, pinboardId))
+              .orderBy(asc(schema.notes.noteindex))
+              .all()
+              .then(notes => new Set(notes.map(note => note.noteindex)));
+            // 查找最小的可用noteindex
+            for (let i = 0; i < maxNotes; i++) {
+                if (!usedIndexes.has(i)) {
+                    nextIndex = i;
+                    break;
+                }
+            }
           }
-        }
       }
+    if (nextIndex === undefined || nextIndex >= maxNotes) {
+        console.error('最终未能确定有效nextIndex', { nextIndex, noteCount, maxIndex });
+        throw new HTTPException(500, { message: '操作失败' });
     }
 
     // 添加留言
@@ -215,15 +226,12 @@ app.get('/getNotes', async (c) => {
     const notes = await db.select().from(schema.notes)
       .where(eq(schema.notes.pinboardId, pinboardId))
       .orderBy(schema.notes.noteindex)
+      .limit(maxNotes)
       .all()
-
-    // 限制返回数量
-    const maxNotes = parseInt('128')
-    const limitedNotes = notes.slice(0, maxNotes)
 
     // 转换为要求的格式
     const result: Record<string, any> = {}
-    limitedNotes.forEach((note, i) => {
+    notes.forEach((note, i) => {
       result[i] = {
         localPosition: note.localPosition,
         angle: note.angle,
